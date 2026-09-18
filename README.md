@@ -81,6 +81,47 @@ uv run mcp-for-agents-test ~/docs-mirror/<name>
 (Install the CLI globally with `uv tool install /path/to/mcp_for_agents`
 if you want it on PATH.)
 
+## Releasing
+
+Releases are cut with `scripts/release.sh`, which keeps the three
+version sources (`pyproject.toml`,
+`src/mcp_for_agents/__init__.py`, and the git tag) in sync. The
+script never pushes; pushing stays manual so nothing leaves the
+machine unreviewed.
+
+Prerequisites: clean tree, on `main`, `uv` on PATH.
+
+```bash
+./scripts/release.sh patch   # or: minor, major
+```
+
+What the script does, in order:
+
+1. Aborts unless the tree is clean and you are on `main`.
+2. Reads the current version from both `pyproject.toml` and
+   `__init__.py`, and aborts if they disagree (version drift must be
+   fixed by hand first).
+3. Computes the next version (semver; `major`/`minor` reset the lower
+   segments to zero) and aborts if the tag already exists. This check
+   runs before anything is modified, so a duplicate tag cannot leave
+   a half-done commit behind.
+4. Writes the new version to both files and stubs a `CHANGELOG.md`
+   entry above the newest existing one.
+5. Runs `ruff check`, `ruff format --check`, and `pytest` (all
+   `--frozen`, so the lockfile cannot shift). Any failure aborts
+   before the commit.
+6. Commits the three files as `[chore] release vX.Y.Z` and creates
+   annotated tag `vX.Y.Z`.
+
+After it finishes:
+
+```bash
+git show HEAD && git show vX.Y.Z   # review
+# fill in the TODO stubs in CHANGELOG.md, then:
+git add CHANGELOG.md && git commit -m "[docs] describe vX.Y.Z changes"
+git push origin main --follow-tags  # ship
+```
+
 ## Adding a new package
 
 See `playbook.md` for the three-phase process: review the upstream
