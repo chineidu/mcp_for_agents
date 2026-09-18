@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,12 +49,16 @@ class Doc:
         Full file contents as a string.
     term_freq : dict[str, int]
         Token-to-count map for the title plus body.
+    length : int
+        Total token count (title plus body). Used for BM25's
+        document-length normalization.
     """
 
     rel_path: str
     title: str
     body: str
     term_freq: dict[str, int] = field(default_factory=dict)
+    length: int = 0
 
 
 def tokenize(text: str) -> list[str]:
@@ -145,16 +150,70 @@ def index_directory(docs_root: Path) -> list[Doc]:
             continue
         title = title_from_body(body, rel_path)
         tokens = tokenize(title + "\n" + body)
-        docs.append(Doc(rel_path, title, body, term_frequency(tokens)))
+        docs.append(Doc(rel_path, title, body, term_frequency(tokens), len(tokens)))
     return docs
 
 
-def score(query_tokens: list[str], doc: Doc) -> float:
-    """Score `doc` against a tokenized query.
+@dataclass(slots=True, frozen=True)
+class Index:
+    """Corpus-wide statistics needed to score with BM25.
 
-    Combines term frequency in the precomputed `term_freq` with a
-    substring count over the body (catches occurrences that the
-    tokenizer would split differently).
+    Built once per corpus (not per query) via `build_index`, since the
+    docs mirror is static for the lifetime of the server process.
+
+    Parameters
+    ----------
+    idf : dict[str, float]
+        Inverse document frequency per term, using the smoothed BM25
+        (Robertson-Sparck Jones) formulation. Always non-negative: a
+        term in every document still contributes a small positive
+        weight rather than zeroing out.
+    avgdl : float
+        Average document length (in tokens) across the corpus.
+    """
+
+    idf: dict[str, float]
+    avgdl: float
+
+
+def build_index(docs: list[Doc]) -> Index:
+    """Compute corpus-wide IDF and average document length for BM25.
+
+    Call this once after `index_directory`, not per query - the result
+    only depends on the corpus, which doesn't change at query time.
+
+    Parameters
+    ----------
+    docs : list[Doc]
+        The indexed corpus, as returned by `index_directory`.
+
+    Returns
+    -------
+    Index
+        Precomputed statistics for `score`. `avgdl` is 0.0 for an
+        empty corpus, and `score` treats that as "no matches".
+    """
+    n = len(docs)
+    doc_freq: dict[str, int] = {}
+    total_length = 0
+    for doc in docs:
+        total_length += doc.length
+        for term in doc.term_freq:
+            doc_freq[term] = doc_freq.get(term, 0) + 1
+    avgdl = total_length / n if n else 0.0
+    idf = {term: math.log(1 + (n - freq + 0.5) / (freq + 0.5)) for term, freq in doc_freq.items()}
+    return Index(idf=idf, avgdl=avgdl)
+
+
+def score(
+    query_tokens: list[str],
+    doc: Doc,
+    index: Index,
+    *,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> float:
+    """Score `doc` against a tokenized query using Okapi BM25.
 
     Parameters
     ----------
@@ -162,18 +221,31 @@ def score(query_tokens: list[str], doc: Doc) -> float:
         Output of `tokenize(query)`.
     doc : Doc
         Candidate document to score.
+    index : Index
+        Corpus-wide IDF and average length, from `build_index`.
+    k1 : float
+        Term-frequency saturation. Higher values let repeated terms
+        keep contributing longer before diminishing returns kick in.
+    b : float
+        Length-normalization strength, from 0 (none) to 1 (full).
 
     Returns
     -------
     float
-        Combined relevance score. Zero when `query_tokens` is empty.
+        BM25 relevance score. Zero when `query_tokens` is empty, the
+        corpus is empty, or none of the query terms appear in `doc`.
     """
-    if not query_tokens:
+    if not query_tokens or index.avgdl == 0:
         return 0.0
-    tf_score = float(sum(doc.term_freq.get(tok, 0) for tok in query_tokens))
-    body_lower = doc.body.lower()
-    substring_bonus = float(sum(body_lower.count(tok) for tok in query_tokens))
-    return tf_score + substring_bonus
+    total = 0.0
+    for tok in query_tokens:
+        tf = doc.term_freq.get(tok, 0)
+        if tf == 0:
+            continue
+        idf = index.idf.get(tok, 0.0)
+        denom = tf + k1 * (1 - b + b * doc.length / index.avgdl)
+        total += idf * (tf * (k1 + 1)) / denom
+    return total
 
 
 def corpus_label(docs_root: Path, acronyms: dict[str, str] | None = None) -> str:

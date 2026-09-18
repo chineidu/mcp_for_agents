@@ -11,6 +11,7 @@ from fastmcp import FastMCP
 
 from mcp_for_agents.indexer import (
     Doc,
+    build_index,
     corpus_label,
     index_directory,
     score,
@@ -55,6 +56,7 @@ def build_server(
     """
     resolved = _resolve_docs_path(docs_path)
     docs = index_directory(resolved)
+    index = build_index(docs)
     by_path = {doc.rel_path: doc for doc in docs}
     final_label = label if label is not None else corpus_label(resolved)
 
@@ -88,7 +90,7 @@ def build_server(
         if not tokens:
             return f"No tokens in query: {query!r}"
         ranked = sorted(
-            ((score(tokens, d), d) for d in docs),
+            ((score(tokens, d, index), d) for d in docs),
             key=lambda p: p[0],
             reverse=True,
         )
@@ -96,7 +98,7 @@ def build_server(
         if not top:
             return f"No matches for: {query!r}"
         lines = [f"Top {len(top)} matches for: {query!r}"]
-        lines += [f"- {d.rel_path} (score={s:.0f}) - {d.title}" for s, d in top]
+        lines += [f"- {d.rel_path} (score={s:.2f}) - {d.title}" for s, d in top]
         return "\n".join(lines)
 
     @mcp.tool

@@ -7,6 +7,8 @@ from pathlib import Path
 from mcp_for_agents.indexer import (
     DEFAULT_ACRONYMS,
     Doc,
+    Index,
+    build_index,
     corpus_label,
     index_directory,
     score,
@@ -151,24 +153,94 @@ class TestIndexDirectory:
         assert result[0].rel_path == "real.md"
 
 
+class TestBuildIndex:
+    def test_avgdl_is_mean_length(self) -> None:
+        # Given
+        docs = [
+            Doc("a.md", "A", "body", {"foo": 1}, length=10),
+            Doc("b.md", "B", "body", {"foo": 1}, length=20),
+        ]
+        # When
+        index = build_index(docs)
+        # Then
+        assert index.avgdl == 15.0
+
+    def test_empty_corpus(self) -> None:
+        # Given / When
+        index = build_index([])
+        # Then
+        assert index.avgdl == 0.0
+        assert index.idf == {}
+
+    def test_rare_term_gets_higher_idf_than_common_term(self) -> None:
+        # Given - "common" appears in both docs, "rare" only in one.
+        docs = [
+            Doc("a.md", "A", "body", {"common": 1, "rare": 1}, length=5),
+            Doc("b.md", "B", "body", {"common": 1}, length=5),
+        ]
+        # When
+        index = build_index(docs)
+        # Then
+        assert index.idf["rare"] > index.idf["common"]
+
+    def test_term_in_every_doc_gets_near_zero_idf(self) -> None:
+        # Given - "common" appears in every one of 10 docs, so it
+        # carries almost no discriminative power; "rare" appears in
+        # just one and should score much higher.
+        docs = [Doc(f"{i}.md", str(i), "body", {"common": 1}, length=5) for i in range(9)]
+        docs.append(Doc("9.md", "9", "body", {"common": 1, "rare": 1}, length=5))
+        # When
+        index = build_index(docs)
+        # Then
+        assert index.idf["common"] < 0.1
+        assert index.idf["rare"] > 1.0
+
+
 class TestScore:
     def test_zero_for_empty_query(self) -> None:
         # Given
-        doc = Doc("a.md", "Title", "body", {"foo": 3})
+        doc = Doc("a.md", "Title", "body", {"foo": 3}, length=3)
+        index = build_index([doc])
         # When / Then
-        assert score([], doc) == 0.0
+        assert score([], doc, index) == 0.0
 
-    def test_combines_tf_and_substring(self) -> None:
+    def test_zero_for_empty_corpus(self) -> None:
+        # Given - an Index with no documents (avgdl == 0).
+        doc = Doc("a.md", "Title", "foo", {"foo": 1}, length=1)
+        index = Index(idf={}, avgdl=0.0)
+        # When / Then
+        assert score(["foo"], doc, index) == 0.0
+
+    def test_zero_when_term_absent(self) -> None:
         # Given
-        doc = Doc("a.md", "Title", "foo bar foo", {"foo": 2, "bar": 1})
+        doc = Doc("a.md", "Title", "foo", {"foo": 1}, length=1)
+        index = build_index([doc])
+        # When / Then
+        assert score(["baz"], doc, index) == 0.0
+
+    def test_rare_query_term_outscores_common_one(self) -> None:
+        # Given - two docs, each mentioning its own term once; "rare"
+        # appears in only one doc, "common" in both.
+        doc_a = Doc("a.md", "A", "body", {"common": 1, "rare": 1}, length=5)
+        doc_b = Doc("b.md", "B", "body", {"common": 1}, length=5)
+        index = build_index([doc_a, doc_b])
         # When
-        result = score(["foo", "baz"], doc)
+        rare_score = score(["rare"], doc_a, index)
+        common_score = score(["common"], doc_a, index)
+        # Then - same tf and length, but "rare" is more discriminative.
+        assert rare_score > common_score
+
+    def test_shorter_doc_scores_higher_for_equal_term_frequency(self) -> None:
+        # Given - both docs mention "foo" once, but doc_a is shorter,
+        # so BM25's length normalization favors it.
+        doc_a = Doc("a.md", "A", "body", {"foo": 1}, length=5)
+        doc_b = Doc("b.md", "B", "body", {"foo": 1}, length=50)
+        index = build_index([doc_a, doc_b])
+        # When
+        score_a = score(["foo"], doc_a, index)
+        score_b = score(["foo"], doc_b, index)
         # Then
-        # Query tokens are ["foo", "baz"]. "bar" is not a query token,
-        # so its term_freq and body occurrences do not contribute.
-        # TF: foo=2, baz=0 -> 2.0
-        # substring: count("foo")=2, count("baz")=0 -> 2.0
-        assert result == 4.0
+        assert score_a > score_b
 
 
 class TestCorpusLabel:
