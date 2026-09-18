@@ -78,6 +78,38 @@ class TestTitleFromBody:
         # Then
         assert result == "my cool doc"
 
+    def test_extracts_from_rst_equals_underline(self) -> None:
+        # Given
+        body = "Decision Trees\n==============\n\nBody text."
+        # When
+        result = title_from_body(body, "tree.rst")
+        # Then
+        assert result == "Decision Trees"
+
+    def test_extracts_from_rst_dash_underline(self) -> None:
+        # Given
+        body = "Random Forest\n-------------\n\nBody text."
+        # When
+        result = title_from_body(body, "forest.rst")
+        # Then
+        assert result == "Random Forest"
+
+    def test_skips_rst_directives_before_title(self) -> None:
+        # Given
+        body = ".. currentmodule:: sklearn\n\n.. _user_guide:\n\nUser Guide\n==========\n\nBody."
+        # When
+        result = title_from_body(body, "index.rst")
+        # Then
+        assert result == "User Guide"
+
+    def test_ignores_short_underline(self) -> None:
+        # Given - "Title" is 5 chars but underline is only 3, so not a title.
+        body = "Title\n---\n\nBody."
+        # When
+        result = title_from_body(body, "page.rst")
+        # Then
+        assert result == "page"
+
 
 class TestIndexDirectory:
     def test_indexes_markdown_files(self, tmp_path: Path) -> None:
@@ -91,6 +123,17 @@ class TestIndexDirectory:
         assert len(result) == 2
         rel_paths = sorted(d.rel_path for d in result)
         assert rel_paths == ["a.md", "b.mdx"]
+
+    def test_indexes_rst_files(self, tmp_path: Path) -> None:
+        # Given
+        (tmp_path / "tree.rst").write_text("Decision Trees\n==============\n\nContent about trees.")
+        (tmp_path / "ignored.txt").write_text("not a doc")
+        # When
+        result = index_directory(tmp_path)
+        # Then
+        assert len(result) == 1
+        assert result[0].rel_path == "tree.rst"
+        assert result[0].title == "Decision Trees"
 
     def test_skips_hidden_and_node_modules(self, tmp_path: Path) -> None:
         # Given

@@ -10,8 +10,12 @@ from pathlib import Path
 logger = logging.getLogger("mcp_for_agents.indexer")
 
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]{3,}")
-_DOC_EXTS = {".md", ".mdx"}
+_DOC_EXTS = {".md", ".mdx", ".rst"}
 _FRONTMATTER_TITLE = re.compile(r'^title:\s*["\']?([^"\'\n]+)["\']?', re.MULTILINE)
+# Characters RST treats as section title underlines. Restricted to the
+# most common set; longer underlines are required (see the check in
+# `title_from_body`).
+_RST_TITLE_CHARS = set("=-~^\"'`#")
 
 # Known corpus labels. Add your package here when you want a particular
 # capitalization (e.g. "FastAPI" instead of "Fastapi"). Anything not in
@@ -66,7 +70,12 @@ def term_frequency(tokens: list[str]) -> dict[str, int]:
 
 
 def title_from_body(body: str, rel_path: str) -> str:
-    """Extract a doc title from frontmatter, first H1, or filename stem.
+    """Extract a doc title from frontmatter, RST underline, first H1, or filename stem.
+
+    Recognises three title styles: YAML frontmatter ``title:``, RST title
+    underline (a line followed by ``=``/``-``/``~``/``^``/``"``/``'``/`` ` ``/``#``
+    repeated at least as long as the title), and markdown ``# H1``. Falls
+    back to the filename stem.
 
     Parameters
     ----------
@@ -74,7 +83,7 @@ def title_from_body(body: str, rel_path: str) -> str:
         Full file contents.
     rel_path : str
         Fallback path used to derive a title from the filename stem
-        when no frontmatter or H1 is present.
+        when no frontmatter, RST title, or H1 is present.
 
     Returns
     -------
@@ -88,7 +97,15 @@ def title_from_body(body: str, rel_path: str) -> str:
             m = _FRONTMATTER_TITLE.search(frontmatter)
             if m:
                 return m.group(1).strip()
-    for line in body.splitlines():
+    lines = body.splitlines()
+    for i in range(len(lines) - 1):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        underline = lines[i + 1].strip()
+        if len(underline) >= len(stripped) and len(set(underline)) == 1 and underline[0] in _RST_TITLE_CHARS:
+            return stripped
+    for line in lines:
         stripped = line.strip()
         if stripped.startswith("# "):
             return stripped[2:].strip()
@@ -96,7 +113,7 @@ def title_from_body(body: str, rel_path: str) -> str:
 
 
 def index_directory(docs_root: Path) -> list[Doc]:
-    """Walk `docs_root` and return a `Doc` for each `.md` / `.mdx` file.
+    """Walk `docs_root` and return a `Doc` for each `.md`, `.mdx`, or `.rst` file.
 
     Skips dotfile directories and `node_modules` / `vendor`. Files
     that fail to read are logged and skipped, not raised.
